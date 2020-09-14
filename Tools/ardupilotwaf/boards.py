@@ -419,6 +419,7 @@ class sitl(Board):
         if not cfg.env.DEBUG:
             env.CXXFLAGS += [
                 '-O3',
+                '-march=native',
             ]
 
         if 'clang++' in cfg.env.COMPILER_CXX and cfg.options.asan:
