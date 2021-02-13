@@ -45,8 +45,6 @@
 #include <AP_Compass/AP_Compass.h>         // ArduPilot Mega Magnetometer Library
 #include <AP_InertialSensor/AP_InertialSensor.h>  // ArduPilot Mega Inertial Sensor (accel & gyro) Library
 #include <AP_AHRS/AP_AHRS.h>
-#include <AP_NavEKF2/AP_NavEKF2.h>
-#include <AP_NavEKF3/AP_NavEKF3.h>
 #include <AP_Mission/AP_Mission.h>         // Mission command library
 #include <AC_AttitudeControl/AC_AttitudeControl_Sub.h> // Attitude control library
 #include <AC_AttitudeControl/AC_PosControl_Sub.h>      // Position control library
@@ -130,6 +128,10 @@ public:
 
     Sub(void);
 
+protected:
+
+    bool should_zero_rc_outputs_on_reboot() const override { return true; }
+
 private:
 
     // key aircraft parameters passed to multiple libraries
@@ -204,7 +206,7 @@ private:
             uint8_t at_bottom           : 1; // true if we are at the bottom
             uint8_t at_surface          : 1; // true if we are at the surface
             uint8_t depth_sensor_present: 1; // true if there is a depth sensor detected at boot
-            uint8_t compass_init_location:1; // true when the compass's initial location has been set
+            uint8_t unused1             : 1; // was compass_init_location; true when the compass's initial location has been set
         };
         uint32_t value;
     } ap;
@@ -212,10 +214,8 @@ private:
     // This is the state of the flight control system
     // There are multiple states defined such as STABILIZE, ACRO,
     control_mode_t control_mode;
-    ModeReason control_mode_reason = ModeReason::UNKNOWN;
 
     control_mode_t prev_control_mode;
-    ModeReason prev_control_mode_reason = ModeReason::UNKNOWN;
 
 #if RCMAP_ENABLED == ENABLED
     RCMapper rcmap;
@@ -308,6 +308,9 @@ private:
     // Flag indicating if we are currently using input hold
     bool input_hold_engaged;
 
+    // Flag indicating if we are currently controlling Pitch and Roll instead of forward/lateral
+    bool roll_pitch_flag = false;
+
     // 3D Location vectors
     // Current location of the Sub (altitude is relative to home)
     Location current_loc;
@@ -358,7 +361,7 @@ private:
 #endif
 
     // Camera/Antenna mount tracking and stabilisation stuff
-#if MOUNT == ENABLED
+#if HAL_MOUNT_ENABLED
     AP_Mount camera_mount;
 #endif
 
@@ -408,13 +411,12 @@ private:
     void twentyfive_hz_logging();
     void three_hz_loop();
     void one_hz_loop();
-    void update_GPS(void);
     void update_turn_counter();
     void read_AHRS(void);
     void update_altitude();
     float get_smoothing_gain();
     void get_pilot_desired_lean_angles(float roll_in, float pitch_in, float &roll_out, float &pitch_out, float angle_max);
-    float get_pilot_desired_yaw_rate(int16_t stick_angle);
+    float get_pilot_desired_yaw_rate(int16_t stick_angle) const;
     void check_ekf_yaw_reset();
     float get_roi_yaw();
     float get_look_ahead_yaw();
@@ -422,7 +424,6 @@ private:
     float get_surface_tracking_climb_rate(int16_t target_rate, float current_alt_target, float dt);
     void update_poscon_alt_max();
     void rotate_body_frame_to_NE(float &x, float &y);
-    void send_heartbeat(mavlink_channel_t chan);
 #if RPM_ENABLED == ENABLED
     void rpm_update();
 #endif
@@ -474,7 +475,7 @@ private:
     void auto_nav_guided_run();
     bool auto_loiter_start();
     void auto_loiter_run();
-    uint8_t get_default_auto_yaw_mode(bool rtl);
+    uint8_t get_default_auto_yaw_mode(bool rtl) const;
     void set_auto_yaw_mode(uint8_t yaw_mode);
     void set_auto_yaw_look_at_heading(float angle_deg, float turn_rate_dps, int8_t direction, uint8_t relative_angle);
     void set_auto_yaw_roi(const Location &roi_location);
@@ -509,6 +510,7 @@ private:
 
     bool stabilize_init(void);
     void stabilize_run();
+    void control_depth();
     bool manual_init(void);
     void manual_run();
     void failsafe_sensors_check(void);
@@ -553,7 +555,7 @@ private:
     void read_barometer(void);
     void init_rangefinder(void);
     void read_rangefinder(void);
-    bool rangefinder_alt_ok(void);
+    bool rangefinder_alt_ok(void) const;
 #if OPTFLOW == ENABLED
     void init_optflow();
 #endif
@@ -606,6 +608,7 @@ private:
     void auto_spline_start(const Location& destination, bool stopped_at_start, AC_WPNav::spline_segment_end_type seg_end_type, const Location& next_destination);
     void log_init(void);
     void accel_cal_update(void);
+    void read_airspeed();
 
     void failsafe_leak_check();
     void failsafe_internal_pressure_check();
@@ -622,7 +625,7 @@ private:
     bool surface_init(void);
     void surface_run();
 
-    uint16_t get_pilot_speed_dn();
+    uint16_t get_pilot_speed_dn() const;
 
     void convert_old_parameters(void);
     bool handle_do_motor_test(mavlink_command_long_t command);
@@ -633,6 +636,11 @@ private:
     uint32_t last_do_motor_test_ms = 0;
 
     bool control_check_barometer();
+
+    // vehicle specific waypoint info helpers
+    bool get_wp_distance_m(float &distance) const override;
+    bool get_wp_bearing_deg(float &bearing) const override;
+    bool get_wp_crosstrack_error_m(float &xtrack_error) const override;
 
     enum Failsafe_Action {
         Failsafe_Action_None    = 0,

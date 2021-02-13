@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <AP_InertialSensor/AP_InertialSensor_Invensensev2.h>
 #include <GCS_MAVLink/GCS.h>
+#include <AP_BoardConfig/AP_BoardConfig.h>
 
 extern const AP_HAL::HAL &hal;
 
@@ -222,7 +223,11 @@ bool AP_Compass_AK09916::init()
     _initialized = true;
 
     /* register the compass instance in the frontend */
-    _compass_instance = register_compass();
+    _bus->set_device_type(DEVTYPE_AK09916);
+    if (!register_compass(_bus->get_bus_id(), _compass_instance)) {
+        goto fail;
+    }
+    set_dev_id(_compass_instance, _bus->get_bus_id());
 
     if (_force_external) {
         set_external(_compass_instance, true);
@@ -230,9 +235,6 @@ bool AP_Compass_AK09916::init()
 
     set_rotation(_compass_instance, _rotation);
     
-    _bus->set_device_type(DEVTYPE_AK09916);
-    set_dev_id(_compass_instance, _bus->get_bus_id());
-
     bus_sem->give();
 
     _bus->register_periodic_callback(10000, FUNCTOR_BIND_MEMBER(&AP_Compass_AK09916::_update, void));
@@ -286,6 +288,19 @@ void AP_Compass_AK09916::_update()
 
     _make_adc_sensitivity_adjustment(raw_field);
     raw_field *= AK09916_MILLIGAUSS_SCALE;
+
+#ifdef HAL_AK09916_HEATER_OFFSET
+    /*
+      the internal AK09916 can be impacted by the magnetic field from
+      a heater. We use the heater duty cycle to correct for the error
+     */
+    if (AP_HAL::Device::devid_get_bus_type(_bus->get_bus_id()) == AP_HAL::Device::BUS_TYPE_SPI) {
+        auto *bc = AP::boardConfig();
+        if (bc) {
+            raw_field += HAL_AK09916_HEATER_OFFSET * bc->get_heater_duty_cycle() * 0.01;
+        }
+    }
+#endif
 
     accumulate_sample(raw_field, _compass_instance, 10);
 }

@@ -31,20 +31,11 @@ void Plane::init_ardupilot()
 
     ins.set_log_raw_bit(MASK_LOG_IMU_RAW);
 
-    set_control_channels();
-
-    mavlink_system.sysid = g.sysid_this_mav;
-
-    // initialise serial ports
-    serial_manager.init();
-    gcs().setup_console();
-
-    register_scheduler_delay_callback();
-
     // setup any board specific drivers
     BoardConfig.init();
-#if HAL_WITH_UAVCAN
-    BoardConfig_CAN.init();
+
+#if HAL_MAX_CAN_PROTOCOL_DRIVERS
+    can_mgr.init();
 #endif
 
     // initialise rc channels including setting mode
@@ -79,6 +70,7 @@ void Plane::init_ardupilot()
     // setup telem slots with serial ports
     gcs().setup_uarts();
 
+
 #if OSD_ENABLED == ENABLED
     osd.init();
 #endif
@@ -105,16 +97,13 @@ void Plane::init_ardupilot()
     g2.efi.init();
 #endif
 
-    // give AHRS the airspeed sensor
-    ahrs.set_airspeed(&airspeed);
-
     // GPS Initialization
     gps.set_log_gps_bit(MASK_LOG_GPS);
     gps.init(serial_manager);
 
     init_rc_in();               // sets up rc channels from radio
 
-#if MOUNT == ENABLED
+#if HAL_MOUNT_ENABLED
     // initialise camera mount
     camera_mount.init();
 #endif
@@ -122,8 +111,6 @@ void Plane::init_ardupilot()
 #if LANDING_GEAR_ENABLED == ENABLED
     // initialise landing gear position
     g2.landing_gear.init();
-    gear.last_auto_cmd = -1;
-    gear.last_cmd = -1;
 #endif
 
 #if FENCE_TRIGGERED_PIN > 0
@@ -150,7 +137,7 @@ void Plane::init_ardupilot()
     // choose the nav controller
     set_nav_controller();
 
-    set_mode_by_number((enum Mode::Number)g.initial_mode.get(), ModeReason::UNKNOWN);
+    set_mode_by_number((enum Mode::Number)g.initial_mode.get(), ModeReason::INITIALISED);
 
     // set the correct flight mode
     // ---------------------------
@@ -167,13 +154,6 @@ void Plane::init_ardupilot()
 #if GRIPPER_ENABLED == ENABLED
     g2.gripper.init();
 #endif
-
-    // disable safety if requested
-    BoardConfig.init_safety();
-
-#if AP_PARAM_KEY_DUMP
-    AP_Param::show_all(hal.console, true);
-#endif
 }
 
 //********************************************************************************
@@ -181,7 +161,7 @@ void Plane::init_ardupilot()
 //********************************************************************************
 void Plane::startup_ground(void)
 {
-    set_mode(mode_initializing, ModeReason::UNKNOWN);
+    set_mode(mode_initializing, ModeReason::INITIALISED);
 
 #if (GROUND_START_DELAY > 0)
     gcs().send_text(MAV_SEVERITY_NOTICE,"Ground start with delay");
@@ -221,8 +201,6 @@ void Plane::startup_ground(void)
     // mid-flight, so set the serial ports non-blocking once we are
     // ready to fly
     serial_manager.set_blocking_writes_all(false);
-
-    gcs().send_text(MAV_SEVERITY_INFO,"Ground start complete");
 }
 
 
@@ -244,13 +222,12 @@ bool Plane::set_mode(Mode &new_mode, const ModeReason reason)
     // backup current control_mode and previous_mode
     Mode &old_previous_mode = *previous_mode;
     Mode &old_mode = *control_mode;
-    const ModeReason previous_mode_reason_backup = previous_mode_reason;
 
     // update control_mode assuming success
     // TODO: move these to be after enter() once start_command_callback() no longer checks control_mode
     previous_mode = control_mode;
     control_mode = &new_mode;
-    previous_mode_reason = control_mode_reason;
+    const ModeReason previous_mode_reason = control_mode_reason;
     control_mode_reason = reason;
 
     // attempt to enter new mode
@@ -263,7 +240,6 @@ bool Plane::set_mode(Mode &new_mode, const ModeReason reason)
         control_mode = &old_mode;
 
         control_mode_reason = previous_mode_reason;
-        previous_mode_reason = previous_mode_reason_backup;
 
         // currently, only Q modes can fail enter(). This will likely change in the future and all modes
         // should be changed to check dependencies and fail early before depending on changes in Mode::set_mode()
@@ -283,7 +259,6 @@ bool Plane::set_mode(Mode &new_mode, const ModeReason reason)
     old_mode.exit();
 
     // record reasons
-    previous_mode_reason = control_mode_reason;
     control_mode_reason = reason;
 
     // log and notify mode change
@@ -340,8 +315,8 @@ void Plane::check_long_failsafe()
             failsafe_long_on_event(FAILSAFE_GCS, ModeReason::GCS_FAILSAFE);
         } else if (g.gcs_heartbeat_fs_enabled == GCS_FAILSAFE_HB_RSSI && 
                    gcs().chan(0) != nullptr &&
-                   gcs().chan(0)->last_radio_status_remrssi_ms != 0 &&
-                   (tnow - gcs().chan(0)->last_radio_status_remrssi_ms) > g.fs_timeout_long*1000) {
+                   gcs().chan(0)->last_radio_status_remrssi_ms() != 0 &&
+                   (tnow - gcs().chan(0)->last_radio_status_remrssi_ms()) > g.fs_timeout_long*1000) {
             failsafe_long_on_event(FAILSAFE_GCS, ModeReason::GCS_FAILSAFE);
         }
     } else {
@@ -419,7 +394,7 @@ void Plane::startup_INS_ground(void)
         // --------------------------
         airspeed.calibrate(true);
     } else {
-        gcs().send_text(MAV_SEVERITY_WARNING,"No airspeed");
+        gcs().send_text(MAV_SEVERITY_WARNING,"No airspeed sensor present");
     }
 }
 
@@ -447,7 +422,7 @@ bool Plane::should_log(uint32_t mask)
  */
 int8_t Plane::throttle_percentage(void)
 {
-    if (quadplane.in_vtol_mode()) {
+    if (quadplane.in_vtol_mode() && !quadplane.in_tailsitter_vtol_transition()) {
         return quadplane.throttle_percentage();
     }
     float throttle = SRV_Channels::get_output_scaled(SRV_Channel::k_throttle);
@@ -472,7 +447,7 @@ void Plane::update_dynamic_notch()
     }
 
     switch (ins.get_gyro_harmonic_notch_tracking_mode()) {
-    case HarmonicNotchDynamicMode::UpdateThrottle: // throttle based tracking
+        case HarmonicNotchDynamicMode::UpdateThrottle: // throttle based tracking
             // set the harmonic notch filter frequency approximately scaled on motor rpm implied by throttle
             if (quadplane.available()) {
                 ins.update_harmonic_notch_freq_hz(ref_freq * MAX(1.0f, sqrtf(quadplane.motors->get_throttle_out() / ref)));
@@ -480,16 +455,47 @@ void Plane::update_dynamic_notch()
             break;
 
         case HarmonicNotchDynamicMode::UpdateRPM: // rpm sensor based tracking
-            if (rpm_sensor.healthy(0)) {
+            float rpm;
+            if (rpm_sensor.get_rpm(0, rpm)) {
                 // set the harmonic notch filter frequency from the main rotor rpm
-                ins.update_harmonic_notch_freq_hz(MAX(ref_freq, rpm_sensor.get_rpm(0) * ref / 60.0f));
+                ins.update_harmonic_notch_freq_hz(MAX(ref_freq, rpm * ref / 60.0f));
             } else {
                 ins.update_harmonic_notch_freq_hz(ref_freq);
             }
             break;
 #ifdef HAVE_AP_BLHELI_SUPPORT
         case HarmonicNotchDynamicMode::UpdateBLHeli: // BLHeli based tracking
-            ins.update_harmonic_notch_freq_hz(MAX(ref_freq, AP_BLHeli::get_singleton()->get_average_motor_frequency_hz() * ref));
+            // set the harmonic notch filter frequency scaled on measured frequency
+            if (ins.has_harmonic_option(HarmonicNotchFilterParams::Options::DynamicHarmonic)) {
+                float notches[INS_MAX_NOTCHES];
+                const uint8_t num_notches = AP_BLHeli::get_singleton()->get_motor_frequencies_hz(INS_MAX_NOTCHES, notches);
+
+                for (uint8_t i = 0; i < num_notches; i++) {
+                    notches[i] =  MAX(ref_freq, notches[i]);
+                }
+                if (num_notches > 0) {
+                    ins.update_harmonic_notch_frequencies_hz(num_notches, notches);
+                } else if (quadplane.available()) {    // throttle fallback
+                    ins.update_harmonic_notch_freq_hz(ref_freq * MAX(1.0f, sqrtf(quadplane.motors->get_throttle_out() / ref)));
+                } else {
+                    ins.update_harmonic_notch_freq_hz(ref_freq);
+                }
+            } else {
+                ins.update_harmonic_notch_freq_hz(MAX(ref_freq, AP_BLHeli::get_singleton()->get_average_motor_frequency_hz() * ref));
+            }
+            break;
+#endif
+#if HAL_GYROFFT_ENABLED
+        case HarmonicNotchDynamicMode::UpdateGyroFFT: // FFT based tracking
+            // set the harmonic notch filter frequency scaled on measured frequency
+            if (ins.has_harmonic_option(HarmonicNotchFilterParams::Options::DynamicHarmonic)) {
+                float notches[INS_MAX_NOTCHES];
+                const uint8_t peaks = gyro_fft.get_weighted_noise_center_frequencies_hz(INS_MAX_NOTCHES, notches);
+
+                ins.update_harmonic_notch_frequencies_hz(peaks, notches);
+            } else {
+                ins.update_harmonic_notch_freq_hz(gyro_fft.get_weighted_noise_center_freq_hz());
+            }
             break;
 #endif
         case HarmonicNotchDynamicMode::Fixed: // static

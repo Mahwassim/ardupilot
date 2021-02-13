@@ -26,14 +26,9 @@ cd /home/$VAGRANT_USER
 # artful rootfs is 2GB without resize:
 sudo resize2fs /dev/sda1
 
-usermod -a -G dialout $VAGRANT_USER
-
 echo "calling pre-reqs script..."
 sudo -H -u $VAGRANT_USER /vagrant/Tools/environment_install/install-prereqs-ubuntu.sh -y
 echo "...pre-reqs script done... initvagrant.sh continues."
-
-# run-in-terminal-window uses xterm:
-apt-get install -y xterm
 
 # valgrind support:
 apt-get install -y valgrind
@@ -41,17 +36,14 @@ apt-get install -y valgrind
 # gdb support:
 apt-get install -y gdb
 
-# gcov support:
-apt-get install -y gcovr lcov
-
-# install pexpect for autotest.py
-pip install pexpect
-
-
 sudo -u $VAGRANT_USER ln -fs /vagrant/Tools/vagrant/screenrc /home/$VAGRANT_USER/.screenrc
 
+# enable permissive ptrace:
+perl -pe 's/kernel.yama.ptrace_scope = ./kernel.yama.ptrace_scope = 0/' -i /etc/sysctl.d/10-ptrace.conf
+echo 0 > /proc/sys/kernel/yama/ptrace_scope
+
 # build JSB sim
-apt-get install -y libtool automake autoconf libexpat1-dev
+apt-get install -y libtool automake autoconf libexpat1-dev cmake
 #  libtool-bin
 sudo --login -u $VAGRANT_USER /vagrant/Tools/scripts/build-jsbsim.sh
 
