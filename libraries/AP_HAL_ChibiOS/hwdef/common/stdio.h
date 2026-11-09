@@ -44,10 +44,8 @@ int printf(const char *fmt, ...);
 void *malloc(size_t size);
 void *calloc(size_t nmemb, size_t size);
 void free(void *ptr);
-
 extern int (*vprintf_console_hook)(const char *fmt, va_list arg);
-
-#define L_tmpnam 32
+void malloc_check(const void *ptr);
 
 #ifdef __cplusplus
 }

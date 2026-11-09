@@ -81,7 +81,7 @@ enum BLDC_STATUS {
 
 using namespace Linux;
 
-static const AP_HAL::HAL& hal = AP_HAL::get_HAL();
+extern const AP_HAL::HAL& hal;
 
 RCOutput_Bebop::RCOutput_Bebop(AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev)
     : _dev(std::move(dev))
@@ -425,12 +425,6 @@ void RCOutput_Bebop::read(uint16_t* period_us, uint8_t len)
     for (int i = 0; i < len; i++) {
         period_us[i] = read(0 + i);
     }
-}
-
-void RCOutput_Bebop::set_esc_scaling(uint16_t min_pwm, uint16_t max_pwm)
-{
-    _min_pwm = min_pwm;
-    _max_pwm = max_pwm;
 }
 
 /* Separate thread to handle the Bebop motors controller */
